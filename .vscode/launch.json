@@ -1,0 +1,39 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Window Only",
+            "request": "launch",
+            "type": "node",
+            "program": "${workspaceFolder}/window-only.ts",
+            "cwd": "${workspaceFolder}",
+            "env": {},
+            "runtimeExecutable": "C:\\Users\\kinso\\.deno\\bin\\deno.EXE",
+            "runtimeArgs": [
+                "run",
+                "--allow-ffi",
+                "--inspect-wait",
+            ],
+            "attachSimplePort": 9229
+        },
+        {
+            "name": "Window & Draw",
+            "request": "launch",
+            "type": "node",
+            "program": "${workspaceFolder}/win-and-draw.ts",
+            "cwd": "${workspaceFolder}",
+            "env": {},
+            "runtimeExecutable": "C:\\Users\\kinso\\.deno\\bin\\deno.EXE",
+            "runtimeArgs": [
+                "run",
+                "--allow-read",
+                "--allow-ffi",
+                "--inspect-wait",
+            ],
+            "attachSimplePort": 9229
+        }
+    ]
+}

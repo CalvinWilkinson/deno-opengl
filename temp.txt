@@ -1,0 +1,12 @@
+[{
+	"resource": "/k:/SOFTWARE-DEVELOPMENT/PLAYGROUNDS/deno-playground/win-and-draw.ts",
+	"owner": "deno",
+	"code": "2345",
+	"severity": 8,
+	"message": "Argument of type 'PointerObject<unknown>' is not assignable to parameter of type 'PointerObject<NoInfer<Omit<{ readonly parameters: readonly [\"f32\", \"f32\", \"f32\", \"f32\"]; readonly result: \"void\"; }, \"nonblocking\">>>'.\n  Type 'unknown' is not assignable to type 'Omit<{ readonly parameters: readonly [\"f32\", \"f32\", \"f32\", \"f32\"]; readonly result: \"void\"; }, \"nonblocking\">'.",
+	"source": "deno-ts",
+	"startLineNumber": 118,
+	"startColumn": 44,
+	"endLineNumber": 118,
+	"endColumn": 98
+}]
