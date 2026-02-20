@@ -1,19 +1,24 @@
+
 // deno-lint-ignore-file explicit-function-return-type no-explicit-any
+
+import { existsSync } from "@std/fs";
+import { isMacOS, isWindows } from "./core/os.ts";
+
+const baseDirPath = Deno.cwd();
 
 // --- GLFW FFI Bindings ---
 
-const libPrefix = Deno.build.os === "windows" ? "" : "lib";
-const libSuffix = Deno.build.os === "windows" ? ".dll" : Deno.build.os === "darwin" ? ".dylib" : ".so";
-
+const libPrefix = isWindows() ? "" : "lib";
+const libSuffix = isWindows() ? ".dll" : isMacOS() ? ".dylib" : ".so";
 const libraryName = `${libPrefix}glfw3${libSuffix}`; // Adjust if your GLFW library is named differently
 
 let dylibPath = "";
 
 try {
     // Attempt to load from common system paths (adjust as needed for your system)
-    if (Deno.build.os === "windows") {
-        dylibPath = `K:\\SOFTWARE-DEVELOPMENT\\PLAYGROUNDS\\deno-playground\\${libraryName}`; // Example, might need to be adjusted
-    } else if (Deno.build.os === "darwin") {
+    if (isWindows()) {
+        dylibPath = `${baseDirPath}/${libraryName}`; // Example, might need to be adjusted
+    } else if (isMacOS()) {
         dylibPath = `/usr/local/lib/${libraryName}`; // Homebrew default
         if (!await Deno.stat(dylibPath).catch(() => false)) {
             dylibPath = `/opt/homebrew/lib/${libraryName}`; // Apple Silicon Homebrew default
@@ -31,12 +36,12 @@ try {
         }
     }
 
-    if (!await Deno.stat(dylibPath).catch(() => false)) {
+    if (!existsSync(dylibPath, { isFile: true })) {
         throw new Error(`Could not find GLFW library at: ${dylibPath}. Please ensure GLFW is installed and the library path is correct.`);
     }
-
-} catch (e) {
-    console.error(`Error finding GLFW library: ${e.message}`);
+} catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`Error finding GLFW library: ${errorMsg}`);
     Deno.exit(1);
 }
 

@@ -1,0 +1,11 @@
+{
+    "name": "deno-opengl",
+    "version": "0.0.1",
+    "exclude": [
+        "./vscode"
+    ],
+    "imports": {
+        "@std/fs": "jsr:@std/fs@1.0.23",
+        "@std/os": "jsr:@std/internal@1.0.12/os"
+    }
+}

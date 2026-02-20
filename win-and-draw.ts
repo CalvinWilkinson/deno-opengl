@@ -1,17 +1,19 @@
-import { emptyDirSync, exists, existsSync } from "jsr:@std/fs@1.0.11";
-// deno-lint-ignore-file explicit-function-return-type no-explicit-any
+import { existsSync } from "@std/fs";
+import { isMacOS, isWindows } from "./core/os.ts";
+
+const baseDirPath = Deno.cwd();
 
 // --- GLFW FFI Bindings (same as before) ---
-const libPrefix = Deno.build.os === "windows" ? "" : "lib";
-const libSuffix = Deno.build.os === "windows" ? ".dll" : Deno.build.os === "darwin" ? ".dylib" : ".so";
+const libPrefix = isWindows() ? "" : "lib";
+const libSuffix = isWindows() ? ".dll" : isMacOS() ? ".dylib" : ".so";
 const libraryName = `${libPrefix}glfw3${libSuffix}`;
 
 let dylibPath = "";
 // ... (Library path finding logic - same as before, ensure GLFW is installed correctly) ...
 try {
     // Attempt to load from common system paths (adjust as needed for your system)
-    if (Deno.build.os === "windows") {
-        dylibPath = `K:\\SOFTWARE-DEVELOPMENT\\PLAYGROUNDS\\deno-playground\\${libraryName}`; // Example, might need to be adjusted
+    if (isWindows()) {
+        dylibPath = `${baseDirPath}/${libraryName}`; // Example, might need to be adjusted
     } else if (Deno.build.os === "darwin") {
         dylibPath = `/usr/local/lib/${libraryName}`; // Homebrew default
         if (!await Deno.stat(dylibPath).catch(() => false)) {
@@ -59,22 +61,51 @@ const glfw = Deno.dlopen(dylibPath, {
 
 // Function address loader - platform specific (simplified for cross-platform, might need adjustments)
 
-function glGetProcAddress<R extends FnDef>(name: string): Deno.PointerObject<R> {
-    if (Deno.build.os === "windows") {
-        const opengl32 = Deno.dlopen("K:\\SOFTWARE-DEVELOPMENT\\PLAYGROUNDS\\deno-playground\\opengl32.dll", {
-            "wglGetProcAddress": { parameters: ["pointer"], result: "pointer" },
-        });
+let _opengl32Lib: Deno.DynamicLibrary<{ wglGetProcAddress: { parameters: ["pointer"]; result: "pointer" } }> | null = null;
+let _opengl32Handle: Deno.PointerValue | null = null;
+
+const kernel32 = isWindows()
+    ? Deno.dlopen("kernel32.dll", {
+        "GetProcAddress": { parameters: ["pointer", "pointer"], result: "pointer" },
+        "GetModuleHandleA": { parameters: ["pointer"], result: "pointer" },
+    })
+    : null;
+
+function glGetProcAddress<T extends readonly string[], R extends ReturnTypes = "void">(name: string): Deno.PointerObject<FnDef<T, R>> {
+    if (isWindows()) {
+        // Lazy-load opengl32.dll handle and library
+        if (!_opengl32Lib) {
+            _opengl32Lib = Deno.dlopen("opengl32.dll", {
+                "wglGetProcAddress": { parameters: ["pointer"], result: "pointer" },
+            });
+        }
+        if (!_opengl32Handle && kernel32) {
+            const modName = new TextEncoder().encode("opengl32.dll\0");
+            _opengl32Handle = kernel32.symbols.GetModuleHandleA(Deno.UnsafePointer.of(modName));
+        }
 
         const nameBuffer = new TextEncoder().encode(name + "\0");
         const namePointer = Deno.UnsafePointer.of(nameBuffer);
-        const proc = opengl32.symbols.wglGetProcAddress(namePointer);
+
+        // First, try wglGetProcAddress (works for OpenGL 1.2+ / extension functions)
+        let proc = _opengl32Lib.symbols.wglGetProcAddress(namePointer);
+
+        // wglGetProcAddress returns NULL or small sentinel values (0x1, 0x2, 0x3) for
+        // functions it doesn't know about (i.e., OpenGL 1.1 core functions like glClearColor)
+        const procValue = proc ? Deno.UnsafePointer.value(proc) : 0n;
+        if (procValue === 0n || (procValue > 0n && procValue <= 3n)) {
+            // Fall back to GetProcAddress from opengl32.dll for OpenGL 1.0/1.1 functions
+            if (kernel32 && _opengl32Handle) {
+                proc = kernel32.symbols.GetProcAddress(_opengl32Handle, namePointer);
+            }
+        }
 
         if (proc === null) {
-            throw new Error(`Failed to load OpenGL function: ${name}`); // Very basic error handling
+            throw new Error(`Failed to load OpenGL function: ${name}`);
         }
 
         return proc;
-    } else if (Deno.build.os === "darwin") { // macOS (Core Profile - modern OpenGL) -  Assumes macOS has OpenGL context available by default
+    } else if (isMacOS()) { // macOS (Core Profile - modern OpenGL) -  Assumes macOS has OpenGL context available by default
         // // macOS may require more involved context creation for Core Profile. This might be a simplification
         // const frameworkPath = "/System/Library/Frameworks/OpenGL.framework/OpenGL"; // Path to OpenGL framework on macOS
         // const openglFramework = Deno.dlopen(frameworkPath, {
@@ -124,34 +155,40 @@ type FnDef<T extends readonly string[], R extends ReturnTypes = "void"> = Omit<{
 // "ClearColor": new Deno.UnsafeFnPointer(new Deno.UnsafeCallback({ parameters: ["f32", "f32", "f32", "f32"], result: "void" }, (a: number) => {}).pointer, { parameters: ["f32", "f32", "f32", "f32"], result: "void" }),
 
 
-const gl = {
-    // Core OpenGL 3.3 functions we'll use (lookup signatures in OpenGL documentation)
-    "ClearColor": new Deno.UnsafeFnPointer(glGetProcAddress("glClearColor") as Deno.PointerObject<FnDef<["f32", "f32", "f32", "f32"]>>, { parameters: ["f32", "f32", "f32", "f32"], result: "void" }),
-    "Clear":      new Deno.UnsafeFnPointer(glGetProcAddress("glClear") as Deno.PointerObject<FnDef<["u32"]>>,      { parameters: ["u32"],                   result: "void" }), // GL_COLOR_BUFFER_BIT
-    "GenVertexArrays":  new Deno.UnsafeFnPointer(glGetProcAddress("glGenVertexArrays") as Deno.PointerObject<FnDef<["i32", "pointer"]>>, { parameters: ["i32", "pointer"],           result: "void" }), // count, &array
-    "BindVertexArray":  new Deno.UnsafeFnPointer(glGetProcAddress("glBindVertexArray") as Deno.PointerObject<FnDef<["u32"]>>, { parameters: ["u32"],                   result: "void" }), // array
-    "GenBuffers":       new Deno.UnsafeFnPointer(glGetProcAddress("glGenBuffers") as Deno.PointerObject<FnDef<["i32", "pointer"]>>,      { parameters: ["i32", "pointer"],           result: "void" }), // count, &buffer
-    "BindBuffer":       new Deno.UnsafeFnPointer(glGetProcAddress("glBindBuffer") as Deno.PointerObject<FnDef<["u32", "u32"]>>,      { parameters: ["u32", "u32"],               result: "void" }), // target, buffer
-    "BufferData":       new Deno.UnsafeFnPointer(glGetProcAddress("glBufferData") as Deno.PointerObject<FnDef<["u32", "usize", "pointer", "u32"]>>,      { parameters: ["u32", "usize", "pointer", "u32"], result: "void" }), // target, size, data, usage
-    "DeleteBuffers":       new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteBuffers") as Deno.PointerObject<FnDef<["u32", "pointer"]>>,      { parameters: ["u32", "pointer"], result: "void" }), // target, size, data, usage
-    "EnableVertexAttribArray": new Deno.UnsafeFnPointer(glGetProcAddress("glEnableVertexAttribArray") as Deno.PointerObject<FnDef<["u32"]>>, { parameters: ["u32"],        result: "void" }), // index
-    "VertexAttribPointer":     new Deno.UnsafeFnPointer(glGetProcAddress("glVertexAttribPointer") as Deno.PointerObject<FnDef<["u32", "i32", "u32", "bool", "i32", "pointer"]>>,     { parameters: ["u32", "i32", "u32", "bool", "i32", "pointer"], result: "void" }), // index, size, type, normalized, stride, pointer
-    "CreateShader":      new Deno.UnsafeFnPointer(glGetProcAddress("glCreateShader") as Deno.PointerObject<FnDef<["u32"], "u32">>,{ parameters: ["u32"],                   result: "u32" }), // shaderType (GL_VERTEX_SHADER, GL_FRAGMENT_SHADER)
-    "DeleteShader":      new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteShader") as Deno.PointerObject<FnDef<["u32"]>>,{ parameters: ["u32"],                   result: "void" }), // shader
-    "ShaderSource":      new Deno.UnsafeFnPointer(glGetProcAddress("glShaderSource") as Deno.PointerObject<FnDef<["u32", "i32", "pointer", "pointer"]>>,     { parameters: ["u32", "i32", "pointer", "pointer"], result: "void" }), // shader, count, string, length
-    "CompileShader":     new Deno.UnsafeFnPointer(glGetProcAddress("glCompileShader") as Deno.PointerObject<FnDef<["u32"]>>,    { parameters: ["u32"],                   result: "void" }), // shader
-    "GetShaderiv":       new Deno.UnsafeFnPointer(glGetProcAddress("glGetShaderiv") as Deno.PointerObject<FnDef<["u32", "u32", "pointer"]>>,      { parameters: ["u32", "u32", "pointer"],           result: "void" }), // shader, pname, params (GL_COMPILE_STATUS)
-    "GetShaderInfoLog":  new Deno.UnsafeFnPointer(glGetProcAddress("glGetShaderInfoLog") as Deno.PointerObject<FnDef<["u32", "i32", "pointer", "pointer"]>>, { parameters: ["u32", "i32", "pointer", "pointer"], result: "void" }), // shader, maxLength, length, infoLog
-    "CreateProgram":     new Deno.UnsafeFnPointer(glGetProcAddress("glCreateProgram") as Deno.PointerObject<FnDef<[], "u32">>,    { parameters: [],                        result: "u32" }), // program
-    "AttachShader":      new Deno.UnsafeFnPointer(glGetProcAddress("glAttachShader") as Deno.PointerObject<FnDef<["u32", "u32"]>>,     { parameters: ["u32", "u32"],               result: "void" }), // program, shader
-    "LinkProgram":       new Deno.UnsafeFnPointer(glGetProcAddress("glLinkProgram") as Deno.PointerObject<FnDef<["u32"]>>,      { parameters: ["u32"],                   result: "void" }), // program
-    "GetProgramiv":      new Deno.UnsafeFnPointer(glGetProcAddress("glGetProgramiv") as Deno.PointerObject<FnDef<["u32", "u32", "pointer"]>>,     { parameters: ["u32", "u32", "pointer"],           result: "void" }), // program, pname, params (GL_LINK_STATUS)
-    "GetProgramInfoLog": new Deno.UnsafeFnPointer(glGetProcAddress("glGetProgramInfoLog") as Deno.PointerObject<FnDef<["u32", "i32", "pointer", "pointer"]>>, { parameters: ["u32", "i32", "pointer", "pointer"], result: "void" }), // program, maxLength, length, infoLog
-    "UseProgram":        new Deno.UnsafeFnPointer(glGetProcAddress("glUseProgram") as Deno.PointerObject<FnDef<["u32"]>>,       { parameters: ["u32"],                   result: "void" }), // program
-    "DeleteProgram":        new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteProgram") as Deno.PointerObject<FnDef<["u32"]>>,       { parameters: ["u32"],                   result: "void" }), // program
-    "DrawArrays":        new Deno.UnsafeFnPointer(glGetProcAddress("glDrawArrays") as Deno.PointerObject<FnDef<["u32", "i32", "i32"]>>,       { parameters: ["u32", "i32", "i32"],               result: "void" }), // mode (GL_TRIANGLES), first, count
-    "DeleteVertexArrays":        new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteVertexArrays") as Deno.PointerObject<FnDef<["u32", "pointer"]>>,       { parameters: ["u32", "pointer"],               result: "void" }), // mode (GL_TRIANGLES), first, count
-};
+// gl is initialized lazily after the OpenGL context is made current,
+// because wglGetProcAddress requires an active context for OpenGL 1.2+ functions.
+let gl: ReturnType<typeof initGL>;
+
+function initGL() {
+    return {
+        // Core OpenGL 3.3 functions we'll use (lookup signatures in OpenGL documentation)
+        "ClearColor": new Deno.UnsafeFnPointer(glGetProcAddress("glClearColor") as Deno.PointerObject<FnDef<["f32", "f32", "f32", "f32"]>>, { parameters: ["f32", "f32", "f32", "f32"], result: "void" }),
+        "Clear":      new Deno.UnsafeFnPointer(glGetProcAddress("glClear") as Deno.PointerObject<FnDef<["u32"]>>,      { parameters: ["u32"],                   result: "void" }), // GL_COLOR_BUFFER_BIT
+        "GenVertexArrays":  new Deno.UnsafeFnPointer(glGetProcAddress("glGenVertexArrays") as Deno.PointerObject<FnDef<["i32", "pointer"]>>, { parameters: ["i32", "pointer"],           result: "void" }), // count, &array
+        "BindVertexArray":  new Deno.UnsafeFnPointer(glGetProcAddress("glBindVertexArray") as Deno.PointerObject<FnDef<["u32"]>>, { parameters: ["u32"],                   result: "void" }), // array
+        "GenBuffers":       new Deno.UnsafeFnPointer(glGetProcAddress("glGenBuffers") as Deno.PointerObject<FnDef<["i32", "pointer"]>>,      { parameters: ["i32", "pointer"],           result: "void" }), // count, &buffer
+        "BindBuffer":       new Deno.UnsafeFnPointer(glGetProcAddress("glBindBuffer") as Deno.PointerObject<FnDef<["u32", "u32"]>>,      { parameters: ["u32", "u32"],               result: "void" }), // target, buffer
+        "BufferData":       new Deno.UnsafeFnPointer(glGetProcAddress("glBufferData") as Deno.PointerObject<FnDef<["u32", "usize", "pointer", "u32"]>>,      { parameters: ["u32", "usize", "pointer", "u32"], result: "void" }), // target, size, data, usage
+        "DeleteBuffers":       new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteBuffers") as Deno.PointerObject<FnDef<["u32", "pointer"]>>,      { parameters: ["u32", "pointer"], result: "void" }), // target, size, data, usage
+        "EnableVertexAttribArray": new Deno.UnsafeFnPointer(glGetProcAddress("glEnableVertexAttribArray") as Deno.PointerObject<FnDef<["u32"]>>, { parameters: ["u32"],        result: "void" }), // index
+        "VertexAttribPointer":     new Deno.UnsafeFnPointer(glGetProcAddress("glVertexAttribPointer") as Deno.PointerObject<FnDef<["u32", "i32", "u32", "bool", "i32", "pointer"]>>,     { parameters: ["u32", "i32", "u32", "bool", "i32", "pointer"], result: "void" }), // index, size, type, normalized, stride, pointer
+        "CreateShader":      new Deno.UnsafeFnPointer(glGetProcAddress("glCreateShader") as Deno.PointerObject<FnDef<["u32"], "u32">>,{ parameters: ["u32"],                   result: "u32" }), // shaderType (GL_VERTEX_SHADER, GL_FRAGMENT_SHADER)
+        "DeleteShader":      new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteShader") as Deno.PointerObject<FnDef<["u32"]>>,{ parameters: ["u32"],                   result: "void" }), // shader
+        "ShaderSource":      new Deno.UnsafeFnPointer(glGetProcAddress("glShaderSource") as Deno.PointerObject<FnDef<["u32", "i32", "pointer", "pointer"]>>,     { parameters: ["u32", "i32", "pointer", "pointer"], result: "void" }), // shader, count, string, length
+        "CompileShader":     new Deno.UnsafeFnPointer(glGetProcAddress("glCompileShader") as Deno.PointerObject<FnDef<["u32"]>>,    { parameters: ["u32"],                   result: "void" }), // shader
+        "GetShaderiv":       new Deno.UnsafeFnPointer(glGetProcAddress("glGetShaderiv") as Deno.PointerObject<FnDef<["u32", "u32", "pointer"]>>,      { parameters: ["u32", "u32", "pointer"],           result: "void" }), // shader, pname, params (GL_COMPILE_STATUS)
+        "GetShaderInfoLog":  new Deno.UnsafeFnPointer(glGetProcAddress("glGetShaderInfoLog") as Deno.PointerObject<FnDef<["u32", "i32", "pointer", "pointer"]>>, { parameters: ["u32", "i32", "pointer", "pointer"], result: "void" }), // shader, maxLength, length, infoLog
+        "CreateProgram":     new Deno.UnsafeFnPointer(glGetProcAddress("glCreateProgram") as Deno.PointerObject<FnDef<[], "u32">>,    { parameters: [],                        result: "u32" }), // program
+        "AttachShader":      new Deno.UnsafeFnPointer(glGetProcAddress("glAttachShader") as Deno.PointerObject<FnDef<["u32", "u32"]>>,     { parameters: ["u32", "u32"],               result: "void" }), // program, shader
+        "LinkProgram":       new Deno.UnsafeFnPointer(glGetProcAddress("glLinkProgram") as Deno.PointerObject<FnDef<["u32"]>>,      { parameters: ["u32"],                   result: "void" }), // program
+        "GetProgramiv":      new Deno.UnsafeFnPointer(glGetProcAddress("glGetProgramiv") as Deno.PointerObject<FnDef<["u32", "u32", "pointer"]>>,     { parameters: ["u32", "u32", "pointer"],           result: "void" }), // program, pname, params (GL_LINK_STATUS)
+        "GetProgramInfoLog": new Deno.UnsafeFnPointer(glGetProcAddress("glGetProgramInfoLog") as Deno.PointerObject<FnDef<["u32", "i32", "pointer", "pointer"]>>, { parameters: ["u32", "i32", "pointer", "pointer"], result: "void" }), // program, maxLength, length, infoLog
+        "UseProgram":        new Deno.UnsafeFnPointer(glGetProcAddress("glUseProgram") as Deno.PointerObject<FnDef<["u32"]>>,       { parameters: ["u32"],                   result: "void" }), // program
+        "DeleteProgram":        new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteProgram") as Deno.PointerObject<FnDef<["u32"]>>,       { parameters: ["u32"],                   result: "void" }), // program
+        "DrawArrays":        new Deno.UnsafeFnPointer(glGetProcAddress("glDrawArrays") as Deno.PointerObject<FnDef<["u32", "i32", "i32"]>>,       { parameters: ["u32", "i32", "i32"],               result: "void" }), // mode (GL_TRIANGLES), first, count
+        "DeleteVertexArrays":        new Deno.UnsafeFnPointer(glGetProcAddress("glDeleteVertexArrays") as Deno.PointerObject<FnDef<["u32", "pointer"]>>,       { parameters: ["u32", "pointer"],               result: "void" }), // mode (GL_TRIANGLES), first, count
+    };
+}
 
 // const gl = {
 //     // Core OpenGL 3.3 functions we'll use (lookup signatures in OpenGL documentation)
@@ -297,6 +334,9 @@ async function showNativeWindowWithTriangle() {
     }
 
     glfw.symbols.glfwMakeContextCurrent(window); // Make the window's OpenGL context current
+
+    // Load OpenGL function pointers now that context is active
+    gl = initGL();
 
     // --- OpenGL Initialization ---
 
