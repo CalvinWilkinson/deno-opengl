@@ -71,7 +71,7 @@ const kernel32 = isWindows()
     })
     : null;
 
-function glGetProcAddress<T extends readonly string[], R extends ReturnTypes = "void">(name: string): Deno.PointerObject<FnDef<T, R>> {
+function glGetProcAddress(name: string): Deno.PointerObject {
     if (isWindows()) {
         // Lazy-load opengl32.dll handle and library
         if (!_opengl32Lib) {
